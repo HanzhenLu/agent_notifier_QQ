@@ -7,9 +7,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
-# 禁用 rich 进度条，避免老 Docker (19.03) 默认 pids cgroup limit 过低
-# 触发 "RuntimeError: can't start new thread"
-RUN pip install --no-cache-dir --progress-bar off -r requirements.txt
+# 1) 通过 ARG 让用户在 build 时可选切换 pip 镜像源（默认走清华源，国内构建更稳定）
+#    海外/企业内网构建可：docker build --build-arg PIP_INDEX_URL=https://pypi.org/simple ...
+# 2) 禁用 rich 进度条，避免老 Docker (19.03) 默认 pids cgroup limit 过低
+#    触发 "RuntimeError: can't start new thread"
+# 3) 调高超时并增加重试，缓解偶发的网络抖动
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+RUN pip install --no-cache-dir --progress-bar off \
+        --index-url "${PIP_INDEX_URL}" \
+        --trusted-host "${PIP_TRUSTED_HOST}" \
+        --timeout 120 --retries 5 \
+        -r requirements.txt
 
 COPY app /app/app
 
