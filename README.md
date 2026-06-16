@@ -69,8 +69,15 @@ BIND_SECRET=...            # openssl rand -hex 32
 ### 3.1 Docker（推荐）
 
 ```bash
+# 让容器以宿主当前用户身份运行，避免容器以 root 把 ./data 写成 root 所有
+export UID=$(id -u) GID=$(id -g)
+
 docker compose up -d --build
 ```
+
+> 不 `export UID/GID` 也能跑（默认回落 `1000:1000`），但宿主当前用户 uid 不是 1000 时，
+> 容器写出来的 `./data/agent_notifier.db` 会变成另一个用户所有，
+> 之后再切回宿主直接运行 `python -m ...` 会报 `attempt to write a readonly database`。
 
 查看日志：
 

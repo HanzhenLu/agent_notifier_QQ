@@ -1,0 +1,37 @@
+# --- secrets ---
+.env
+.env.*
+!.env.example
+
+# --- local sqlite data ---
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# --- vcs / editor ---
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# --- docs / dev only ---
+README.md
+requirements.md
+requirements-dev.txt
+tests/

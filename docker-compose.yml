@@ -3,6 +3,9 @@ services:
     build: .
     container_name: agent-notifier-api
     restart: unless-stopped
+    # 以宿主当前用户 uid/gid 运行，避免容器以 root 把 ./data 下的 SQLite 文件
+    # 写成 root 所有，导致后续在宿主直接运行 `python -m ...` 时只读
+    user: "${UID:-1000}:${GID:-1000}"
     env_file:
       - .env
     environment:
@@ -12,16 +15,32 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/data
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # 抬高线程/进程上限，规避宿主默认 cgroup pids limit 触发 "can't start new thread"
+    pids_limit: 4096
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    # 显式使用 asyncio + h11，规避 uvloop/httptools 在部分内核+glibc 下的 segfault (exit 139)
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "asyncio", "--http", "h11"]
 
   agent-notifier-gateway:
     build: .
     container_name: agent-notifier-gateway
     restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
     env_file:
       - .env
     environment:
       DB_PATH: /data/agent_notifier.db
     volumes:
       - ./data:/data
+    # 抬高线程/进程上限，规避宿主默认 cgroup pids limit 触发 "can't start new thread"
+    pids_limit: 4096
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
     command: ["python", "-m", "app.gateway_worker"]

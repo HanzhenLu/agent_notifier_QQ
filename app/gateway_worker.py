@@ -319,10 +319,22 @@ async def _amain() -> None:
     worker = GatewayWorker()
 
     loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+
+    stop_count = {"n": 0}
 
     def _signal_handler() -> None:
-        logger.info("received stop signal")
-        asyncio.create_task(worker.stop())
+        stop_count["n"] += 1
+        logger.info("received stop signal (%d)", stop_count["n"])
+        # 第一次：标记停止 + 取消主任务，让 WebSocket recv / sleep 立刻退出
+        worker._stopping.set()
+        if main_task is not None and not main_task.done():
+            main_task.cancel()
+        # 连续按多次仍然卡住时，直接强退
+        if stop_count["n"] >= 3:
+            logger.warning("force exit after %d stop signals", stop_count["n"])
+            import os
+            os._exit(130)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -331,7 +343,14 @@ async def _amain() -> None:
             # Windows 等平台不支持
             pass
 
-    await worker.run_forever()
+    try:
+        await worker.run_forever()
+    except asyncio.CancelledError:
+        logger.info("main task cancelled, shutting down")
+        try:
+            await worker._qq.aclose()
+        except Exception:
+            pass
 
 
 def main() -> None:
