@@ -61,11 +61,14 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS targets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
                 user_openid TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                agent_token_hash TEXT,
+                token_prefix TEXT,
+                last_used_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS notify_events (
@@ -102,6 +105,64 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_notify_events_created
                 ON notify_events(created_at DESC);
             """
+        )
+
+        # ------------------------------------------------------------------
+        # 软迁移：为老库补齐 per-user agent_token 相关字段
+        # ------------------------------------------------------------------
+        for stmt in (
+            "ALTER TABLE targets ADD COLUMN agent_token_hash TEXT",
+            "ALTER TABLE targets ADD COLUMN token_prefix TEXT",
+            "ALTER TABLE targets ADD COLUMN last_used_at TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                # duplicate column 表示已经迁移过
+                pass
+
+        # 老库 targets.name 原本带 UNIQUE 约束（旧设计 name='me'），
+        # 新设计里 name 是用户别名，不应唯一。检查并重建表。
+        sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='targets'"
+        ).fetchone()
+        if sql_row and "UNIQUE" in (sql_row["sql"] or "").upper():
+            logger.info("migrating targets table: dropping UNIQUE on name")
+            conn.executescript(
+                """
+                CREATE TABLE targets__new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    user_openid TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    agent_token_hash TEXT,
+                    token_prefix TEXT,
+                    last_used_at TEXT
+                );
+                INSERT INTO targets__new (
+                    id, name, user_openid, enabled, created_at, updated_at,
+                    agent_token_hash, token_prefix, last_used_at
+                )
+                SELECT
+                    id, name, user_openid, enabled, created_at, updated_at,
+                    agent_token_hash, token_prefix, last_used_at
+                FROM targets;
+                DROP TABLE targets;
+                ALTER TABLE targets__new RENAME TO targets;
+                """
+            )
+
+        # 每个 user_openid 至多一行 target
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_user_openid "
+            "ON targets(user_openid)"
+        )
+        # token_hash 唯一（允许 NULL，老行迁移期可能没 token）
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_token_hash "
+            "ON targets(agent_token_hash) WHERE agent_token_hash IS NOT NULL"
         )
     logger.info("database initialized at %s", get_settings().db_path)
 
@@ -206,49 +267,142 @@ def list_events(limit: int = 20) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def upsert_target(name: str, user_openid: str) -> None:
-    """upsert 目标。"""
+def _target_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "user_openid": row["user_openid"],
+        "enabled": row["enabled"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "token_prefix": row["token_prefix"],
+        "last_used_at": row["last_used_at"],
+    }
+
+
+def upsert_target_with_token(
+    *,
+    user_openid: str,
+    name: str,
+    agent_token_hash: str,
+    token_prefix: str,
+) -> dict[str, Any]:
+    """根据 ``user_openid`` upsert target，并写入新生成的 token hash。
+
+    若该 ``user_openid`` 已存在：更新 token、name、updated_at、enable=1。
+    若不存在：新建一行。
+
+    Returns:
+        新写入/更新后的 target（dict 形式，含 token_prefix 等元信息，但不含 hash）。
+    """
     now = _utc_now_iso()
     with _connect() as conn:
+        # 通过 user_openid 唯一索引完成 upsert
         conn.execute(
             """
-            INSERT INTO targets (name, user_openid, enabled, created_at, updated_at)
-            VALUES (?, ?, 1, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                user_openid = excluded.user_openid,
+            INSERT INTO targets (
+                name, user_openid, enabled, created_at, updated_at,
+                agent_token_hash, token_prefix, last_used_at
+            )
+            VALUES (?, ?, 1, ?, ?, ?, ?, NULL)
+            ON CONFLICT(user_openid) DO UPDATE SET
+                name = excluded.name,
                 enabled = 1,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                agent_token_hash = excluded.agent_token_hash,
+                token_prefix = excluded.token_prefix
             """,
-            (name, user_openid, now, now),
+            (name, user_openid, now, now, agent_token_hash, token_prefix),
         )
+        row = conn.execute(
+            """
+            SELECT id, name, user_openid, enabled, created_at, updated_at,
+                   token_prefix, last_used_at
+            FROM targets WHERE user_openid = ? LIMIT 1
+            """,
+            (user_openid,),
+        ).fetchone()
+    return _target_row_to_dict(row) if row else {}
 
 
-def get_target(name: str = "me") -> Optional[dict[str, Any]]:
-    """读取指定 name 的启用目标。"""
+def get_target_by_token_hash(token_hash: str) -> Optional[dict[str, Any]]:
+    """根据 token sha256 查询启用的 target。"""
     with _connect() as conn:
         row = conn.execute(
             """
-            SELECT id, name, user_openid, enabled, created_at, updated_at
+            SELECT id, name, user_openid, enabled, created_at, updated_at,
+                   token_prefix, last_used_at
             FROM targets
-            WHERE name = ? AND enabled = 1
+            WHERE agent_token_hash = ? AND enabled = 1
             LIMIT 1
             """,
-            (name,),
+            (token_hash,),
         ).fetchone()
-    return dict(row) if row else None
+    return _target_row_to_dict(row) if row else None
+
+
+def get_target_by_openid(user_openid: str) -> Optional[dict[str, Any]]:
+    """根据 user_openid 查询 target（含已禁用的）。"""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, user_openid, enabled, created_at, updated_at,
+                   token_prefix, last_used_at
+            FROM targets
+            WHERE user_openid = ?
+            LIMIT 1
+            """,
+            (user_openid,),
+        ).fetchone()
+    return _target_row_to_dict(row) if row else None
+
+
+def disable_target_by_openid(user_openid: str) -> bool:
+    """按 user_openid 禁用 target，并清空 token。
+
+    Returns:
+        是否真的影响到一行（False 表示该用户从未绑定过）。
+    """
+    now = _utc_now_iso()
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE targets
+            SET enabled = 0,
+                agent_token_hash = NULL,
+                updated_at = ?
+            WHERE user_openid = ? AND enabled = 1
+            """,
+            (now, user_openid),
+        )
+        return cur.rowcount > 0
+
+
+def touch_target_last_used(target_id: int) -> None:
+    """更新 target 的 last_used_at。失败不抛。"""
+    now = _utc_now_iso()
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE targets SET last_used_at = ? WHERE id = ?",
+                (now, target_id),
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("touch_target_last_used failed: %s", e)
 
 
 def list_targets() -> list[dict[str, Any]]:
-    """列出全部目标。"""
+    """列出全部目标（不返回 token hash）。"""
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, user_openid, enabled, created_at, updated_at
+            SELECT id, name, user_openid, enabled, created_at, updated_at,
+                   token_prefix, last_used_at
             FROM targets
             ORDER BY id ASC
             """
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [_target_row_to_dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

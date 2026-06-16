@@ -3,7 +3,9 @@
 set -euo pipefail
 
 : "${AGENT_NOTIFY_URL:?missing AGENT_NOTIFY_URL}"
-: "${AGENT_NOTIFY_TOKEN:?missing AGENT_NOTIFY_TOKEN}"
+# 兼容旧变量名 AGENT_NOTIFY_TOKEN
+: "${AGENT_TOKEN:=${AGENT_NOTIFY_TOKEN:-}}"
+: "${AGENT_TOKEN:?missing AGENT_TOKEN (the per-user token from /bind reply)}"
 
 PROJECT="${1:?usage: notify-agent-done.sh <project> <status> [summary]}"
 STATUS="${2:?usage: notify-agent-done.sh <project> <status> [summary]}"
@@ -13,7 +15,7 @@ HOSTNAME_VALUE="$(hostname)"
 EVENT_ID="${PROJECT}-${HOSTNAME_VALUE}-$(date +%Y%m%d%H%M%S)-$$"
 
 curl -fsS -X POST "$AGENT_NOTIFY_URL" \
-  -H "Authorization: Bearer $AGENT_NOTIFY_TOKEN" \
+  -H "Authorization: Bearer $AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$(jq -n \
     --arg event_id "$EVENT_ID" \

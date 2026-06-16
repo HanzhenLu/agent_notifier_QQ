@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import signal
 from typing import Any, Optional
 
@@ -17,6 +18,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from app import db
+from app.auth import hash_token
 from app.config import get_settings
 from app.qq_client import QQClient, QQClientError, new_qq_client_from_settings
 
@@ -259,31 +261,30 @@ class GatewayWorker:
         # 命令派发
         if content.startswith("/bind"):
             await self._handle_bind(content, user_openid, msg_id)
+        elif content == "/unbind":
+            await self._handle_unbind(user_openid, msg_id)
+        elif content == "/whoami":
+            await self._handle_whoami(user_openid, msg_id)
         elif content == "/ping":
             await self._reply(user_openid, "pong", msg_id=msg_id)
-        elif content == "/whoami":
-            await self._reply(
-                user_openid,
-                f"your user_openid: {user_openid}",
-                msg_id=msg_id,
-            )
         else:
             logger.debug("ignored non-command message: %s", masked_content)
+
+    # ------------------------------------------------------------------
+    # 命令处理
+    # ------------------------------------------------------------------
 
     async def _handle_bind(
         self, content: str, user_openid: str, msg_id: str
     ) -> None:
-        """处理 /bind <secret> 命令。"""
+        """处理 ``/bind <secret>`` 命令。
+
+        校验通过后：
+        - 生成新的 agent_token，覆盖该 user_openid 的旧 token；
+        - 私信回复 token 明文（仅此一次）和使用方法。
+        """
         expected = f"/bind {self._settings.bind_secret}"
-        if content == expected:
-            db.upsert_target("me", user_openid)
-            logger.info("bind success: openid=%s", user_openid)
-            await self._reply(
-                user_openid,
-                "✅ 绑定成功，后续 agent 结束通知会发送到当前 QQ。",
-                msg_id=msg_id,
-            )
-        else:
+        if content != expected:
             # 校验失败：回复绑定失败，但不要回显错误的 secret 文本
             logger.warning(
                 "bind failed: openid=%s msg_id=%s (secret mismatch)",
@@ -295,6 +296,94 @@ class GatewayWorker:
                 "❌ 绑定失败：BIND_SECRET 不正确。",
                 msg_id=msg_id,
             )
+            return
+
+        # 自动起名：user_<openid 后 6 位>
+        suffix = (user_openid or "")[-6:] or "anon"
+        name = f"user_{suffix}"
+
+        # 生成 32 字节 URL-safe token，加可读前缀
+        raw_token = secrets.token_urlsafe(32)
+        prefix = self._settings.token_prefix or "ant_"
+        agent_token = f"{prefix}{raw_token}"
+        token_prefix_for_log = agent_token[:8]
+        token_hash = hash_token(agent_token)
+
+        try:
+            db.upsert_target_with_token(
+                user_openid=user_openid,
+                name=name,
+                agent_token_hash=token_hash,
+                token_prefix=token_prefix_for_log,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("bind upsert failed: %s", e)
+            await self._reply(
+                user_openid,
+                "❌ 绑定失败：服务器内部错误，请稍后重试。",
+                msg_id=msg_id,
+            )
+            return
+
+        logger.info(
+            "bind success: openid=%s name=%s token_prefix=%s",
+            user_openid,
+            name,
+            token_prefix_for_log,
+        )
+
+        # 私信回复 token 明文（仅此一次）
+        reply = (
+            "✅ 绑定成功。\n"
+            f"你的 agent_token（仅此一次显示）：\n{agent_token}\n"
+            "\n请妥善保管：丢失需重新 /bind 重置。"
+            "\n使用方式：\n"
+            "  curl -H \"Authorization: Bearer <agent_token>\" \\\n"
+            "       -X POST <AGENT_NOTIFY_URL>/v1/notify/test"
+        )
+        await self._reply(user_openid, reply, msg_id=msg_id)
+
+    async def _handle_unbind(self, user_openid: str, msg_id: str) -> None:
+        """处理 ``/unbind`` 命令：禁用绑定并使 token 立即失效。"""
+        affected = db.disable_target_by_openid(user_openid)
+        if affected:
+            logger.info("unbind success: openid=%s", user_openid)
+            await self._reply(
+                user_openid,
+                "✅ 已解绑：原 agent_token 立即失效，后续不会再向你推送通知。\n"
+                "重新使用请发送 /bind <BIND_SECRET>。",
+                msg_id=msg_id,
+            )
+        else:
+            await self._reply(
+                user_openid,
+                "ℹ️ 你当前没有有效绑定，无需解绑。",
+                msg_id=msg_id,
+            )
+
+    async def _handle_whoami(self, user_openid: str, msg_id: str) -> None:
+        """处理 ``/whoami`` 命令：展示当前绑定状态（不显示 token 明文）。"""
+        target = db.get_target_by_openid(user_openid)
+        if target is None:
+            reply = (
+                "ℹ️ 当前未绑定。\n"
+                f"你的 user_openid: {user_openid}\n"
+                "发送 /bind <BIND_SECRET> 完成绑定。"
+            )
+        else:
+            enabled = bool(target.get("enabled"))
+            status_emoji = "✅" if enabled else "⛔"
+            reply = (
+                f"{status_emoji} 当前绑定信息：\n"
+                f"name: {target.get('name')}\n"
+                f"user_openid: {user_openid}\n"
+                f"enabled: {enabled}\n"
+                f"token_prefix: {target.get('token_prefix') or '<none>'}\n"
+                f"last_used_at: {target.get('last_used_at') or '<never>'}\n"
+                f"created_at: {target.get('created_at')}\n"
+                f"updated_at: {target.get('updated_at')}"
+            )
+        await self._reply(user_openid, reply, msg_id=msg_id)
 
     async def _reply(
         self,

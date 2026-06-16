@@ -4,7 +4,6 @@
 """
 
 from functools import lru_cache
-from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,12 +15,12 @@ class Settings(BaseSettings):
     qq_app_id: str
     qq_app_secret: str
     qq_api_base: str = "https://sandbox.api.sgroup.qq.com"
-    # 默认通知目标 openid，若为空则查 SQLite 中 name='me' 的目标
-    qq_target_openid: Optional[str] = None
 
-    # 鉴权
-    agent_notify_token: str
+    # /bind 命令使用的共享邀请密钥（任何持有此密钥的 QQ 用户都可注册）
     bind_secret: str
+
+    # 生成 agent_token 时使用的可读前缀（便于在日志/日志扫描中识别）
+    token_prefix: str = "ant_"
 
     # SQLite
     db_path: str = "./data/agent_notifier.db"
