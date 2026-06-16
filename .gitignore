@@ -1,4 +1,5 @@
 .env
+skills/**/.env
 __pycache__/
 *.pyc
 *.pyo
