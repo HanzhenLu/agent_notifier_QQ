@@ -4,8 +4,9 @@ services:
     container_name: agent-notifier-api
     restart: unless-stopped
     # 以宿主当前用户 uid/gid 运行，避免容器以 root 把 ./data 下的 SQLite 文件
-    # 写成 root 所有，导致后续在宿主直接运行 `python -m ...` 时只读
-    user: "${UID:-1000}:${GID:-1000}"
+    # 写成 root 所有，导致后续在宿主直接运行 `python -m ...` 时只读。
+    # 注意：bash 中 UID 是只读内建变量，因此这里使用 HOST_UID/HOST_GID。
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     env_file:
       - .env
     environment:
@@ -29,7 +30,7 @@ services:
     build: .
     container_name: agent-notifier-gateway
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     env_file:
       - .env
     environment:

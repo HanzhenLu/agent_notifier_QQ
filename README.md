@@ -75,12 +75,13 @@ BIND_SECRET=...            # 任何持有此值的 QQ 用户都可注册自己
 
 ```bash
 # 让容器以宿主当前用户身份运行，避免容器以 root 把 ./data 写成 root 所有
-export UID=$(id -u) GID=$(id -g)
+# 注意：bash 中 UID 是只读内建变量，所以这里用 HOST_UID / HOST_GID 作为别名
+export HOST_UID=$(id -u) HOST_GID=$(id -g)
 
 docker compose up -d --build
 ```
 
-> 不 `export UID/GID` 也能跑（默认回落 `1000:1000`），但宿主当前用户 uid 不是 1000 时，
+> 不 `export HOST_UID/HOST_GID` 也能跑（默认回落 `1000:1000`），但宿主当前用户 uid 不是 1000 时，
 > 容器写出来的 `./data/agent_notifier.db` 会变成另一个用户所有，
 > 之后再切回宿主直接运行 `python -m ...` 会报 `attempt to write a readonly database`。
 
