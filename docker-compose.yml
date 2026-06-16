@@ -1,0 +1,27 @@
+services:
+  agent-notifier-api:
+    build: .
+    container_name: agent-notifier-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 在 docker 环境下覆盖 DB_PATH，确保使用 volume 挂载点
+      DB_PATH: /data/agent_notifier.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  agent-notifier-gateway:
+    build: .
+    container_name: agent-notifier-gateway
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /data/agent_notifier.db
+    volumes:
+      - ./data:/data
+    command: ["python", "-m", "app.gateway_worker"]
