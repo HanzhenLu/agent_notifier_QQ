@@ -3,31 +3,44 @@
 让支持 skills 的 agent（Claude / Cursor / 其它）在长耗时任务结束后，
 **自动把结果通知到你的 QQ**。
 
-> 服务端部署、机器人申请、`/bind` 流程见 [仓库根 README](../../README.md)。
+> 服务端部署、机器人申请、`/bind` 流程见 [配套服务仓库 README](https://github.com/HanzhenLu/agent-notifier-qq)。
 
-## 安装（一次配好）
+## 安装
 
-1. 拷一份配置模板并填入你自己的值：
-   ```bash
-   cp skills/agent-notifier-qq/.env.example skills/agent-notifier-qq/.env
-   ${EDITOR:-vi} skills/agent-notifier-qq/.env
-   ```
-   需要填两个变量：
-   - `AGENT_NOTIFY_URL` —— 你部署的服务地址，**必须包含 `/v1/notify/agent-done` 路径**
-   - `AGENT_TOKEN` —— 在 QQ 里对机器人发 `/bind <别名>` 后机器人回复的 `ant_xxx` token
+skill 以 zip 形式分发。本目录就是 skill 的根，把整个目录打包上传给 agent 即可：
 
-2. 确认 `.env` 不会被提交（仓库 `.gitignore` 已经覆盖）：
-   ```bash
-   git check-ignore -v skills/agent-notifier-qq/.env
-   ```
+```bash
+# 在仓库根目录执行
+cd skills && zip -r agent-notifier-qq.zip agent-notifier-qq && cd ..
+# 然后在 agent 的 skills 设置里上传 skills/agent-notifier-qq.zip
+```
+
+## 配置（一次配好）
+
+skill 通过**环境变量**读取你的服务地址和 token，**不依赖任何配置文件**。
+任选下面一种方式：
+
+- **A. agent / capsule 的 secrets 设置**（推荐，token 不落盘）：
+  在 agent 的设置面板里添加：
+  - `AGENT_NOTIFY_URL` = `http://<your-host>:8000/v1/notify/agent-done`
+  - `AGENT_TOKEN` = `ant_xxxxxxxxxxxxxxxx`（在 QQ 给机器人发 `/bind <别名>` 拿到）
+  - `AGENT_NAME` = `claude` _(可选)_
+- **B. 终端 `export`**（仅本次会话有效）：
+  ```bash
+  export AGENT_NOTIFY_URL='http://your-host:8000/v1/notify/agent-done'
+  export AGENT_TOKEN='ant_xxxxxxxxxxxxxxxx'
+  ```
+- **C. 写进 `~/.bashrc` / `~/.zshrc`**（持久化，单机适用）。
+
+> ⚠️ **不要**把 token 写进任何会被 git 跟踪的文件。
 
 ## 自检
 
 不依赖 agent，手动跑一遍，QQ 应当收到一条消息：
 
 ```bash
-set -a; source skills/agent-notifier-qq/.env; set +a
-bash scripts/notify-agent-done.sh selftest success "skill 自检 ✅"
+# 假设 skill 解压在 ~/.claude/skills/agent-notifier-qq
+bash ~/.claude/skills/agent-notifier-qq/notify-agent-done.sh selftest success "skill 自检 ✅"
 ```
 
 QQ 没收到？常见原因：
@@ -37,19 +50,14 @@ QQ 没收到？常见原因：
 
 ## agent 怎么用
 
-把这个仓库（或单独 copy 出来的 `skills/agent-notifier-qq/` 目录 + `scripts/`
-两个 sh）放到 agent 的 skills 搜索路径里。agent 会在你说出"结束后通知我"
-之类的话时自动加载 [SKILL.md](./SKILL.md)。
+把这个 zip 上传给 agent 后，agent 会在你说出"结束后通知我"之类的话时
+自动加载 [SKILL.md](./SKILL.md)，按里面的指令调用 `notify-agent-done.sh`。
 
 ## 文件清单
 
 ```
-skills/agent-notifier-qq/
-├── SKILL.md         # 给 agent 看的指令（触发词、调用方式、字段说明）
-├── README.md        # 给人看的（你正在读）
-└── .env.example     # 配置模板，复制成 .env 后自己填
+agent-notifier-qq/                  ← zip 解压后顶层目录
+├── SKILL.md                        # 给 agent 看的指令（触发词、调用方式、字段说明）
+├── README.md                       # 给人看的（你正在读）
+└── notify-agent-done.sh            # 实际发请求的脚本，从环境变量读配置
 ```
-
-实际发请求的脚本在仓库根的 [`scripts/`](../../scripts/) 下：
-- `notify-agent-done.sh` —— 手动发一条结束通知
-- `run-with-notify.sh` —— 包裹任意命令，结束后按真实退出码自动通知

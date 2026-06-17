@@ -91,9 +91,11 @@ async def notify_agent_done(
     err_text: Optional[str] = None
     qq_message_id: Optional[str] = None
     try:
-        qq_resp = await client.send_c2c_message(
-            target_openid, content, event_id=req.event_id
-        )
+        # 注意：req.event_id 仅用于本服务自身去重 / 落库，不能透传给 QQ。
+        # QQ /v2/users/{openid}/messages 接口的 event_id 字段语义是
+        # 「响应哪个 QQ 回调事件」，主动消息场景下不应携带该字段，
+        # 否则 QQ 会返回 40034025 "请求参数event_id无效"。
+        qq_resp = await client.send_c2c_message(target_openid, content)
         qq_message_id = qq_resp.get("id") if isinstance(qq_resp, dict) else None
     except QQClientError as e:
         send_status = "failed"

@@ -211,10 +211,10 @@ export AGENT_NAME="codex-voltron"
 ./scripts/run-with-notify.sh demo bash -c 'exit 3'   # 失败也会通知，脚本退出码=3
 ```
 
-或直接手动通知：
+或直接手动通知（脚本随 [skills/agent-notifier-qq/](./skills/agent-notifier-qq/) 一起分发）：
 
 ```bash
-./scripts/notify-agent-done.sh voltron success "本轮任务完成"
+./skills/agent-notifier-qq/notify-agent-done.sh voltron success "本轮任务完成"
 ```
 
 > 脚本兼容旧变量名：若已设置 `AGENT_NOTIFY_TOKEN`，脚本会回退使用它。

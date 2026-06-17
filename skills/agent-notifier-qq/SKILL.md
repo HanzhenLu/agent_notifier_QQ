@@ -11,7 +11,7 @@ description: |
 # agent-notifier-qq · agent 完成通知
 
 把"任务结束"事件 POST 给一个自部署的 HTTP 服务，由它转发到用户的 QQ。
-本 skill 只负责**正确发出请求**，不负责服务端部署（部署见仓库根 README）。
+本 skill 只负责**正确发出请求**，不负责服务端部署（部署见配套仓库 README）。
 
 ---
 
@@ -24,7 +24,8 @@ description: |
 
 **不应该用**：
 - 任务只有几秒钟，用户就在屏幕前。
-- 用户没有配置过 `.env`（见第 2 步）。此时应先提示用户配置，而不是直接调用。
+- 用户没有配置过 `AGENT_NOTIFY_URL` / `AGENT_TOKEN` 这两个环境变量（见第 2 节）。
+  此时应先提示用户配置，而不是直接调用。
 - 任务**中途**的进度上报。本 skill 是**结束信号**，不是进度通道。每个 `event_id`
   只应发一次。
 
@@ -34,32 +35,50 @@ description: |
 
 让用户做以下两件事，缺一不可：
 
-1. 部署或拿到一个 agent-notifier-qq 服务地址（参考主仓库 README）。
+1. 部署或拿到一个 agent-notifier-qq 服务地址（参考配套仓库 README）。
 2. 在 QQ 里给那个机器人发 `/bind <一个英文别名>`，机器人会回复一个
    `ant_xxxxx` 形式的 token。
 
-然后让用户**复制 `.env.example` 为 `.env` 并填入两个变量**：
+然后让用户**配置两个环境变量**（任选一种方式）：
 
-```bash
-cp skills/agent-notifier-qq/.env.example skills/agent-notifier-qq/.env
-# 然后用编辑器填入 AGENT_NOTIFY_URL 和 AGENT_TOKEN
-```
+| 必填 | 变量名 | 含义 |
+|---|---|---|
+| ✅ | `AGENT_NOTIFY_URL` | 服务地址，**必须含完整路径** `/v1/notify/agent-done`，例如 `http://1.2.3.4:8000/v1/notify/agent-done` |
+| ✅ | `AGENT_TOKEN` | `/bind` 回复中的 `ant_xxxxx` |
+| ❌ | `AGENT_NAME` | 出现在通知里的 agent 名字，默认 `agent`，建议 `claude` / `cursor` |
 
-`.env` 已被 `.gitignore` 忽略，不会被提交。
+配置方式（推荐第一种）：
+
+- **A. 在 agent / capsule 的 secrets 设置里填入**（Claude / Cursor 等通常有此入口）。
+  这是最安全的方式，token 不会落到本地文件。
+- **B. 终端内直接 `export`**：
+  ```bash
+  export AGENT_NOTIFY_URL='http://your-host:8000/v1/notify/agent-done'
+  export AGENT_TOKEN='ant_xxxxxxxxxxxxxxxx'
+  export AGENT_NAME='claude'   # 可选
+  ```
+- **C. 在 shell 启动文件里**（`~/.bashrc` / `~/.zshrc`）持久化上面三行。
+
+> ⚠️ **不要**把 token 写进任何会被 git 跟踪的文件。
 
 ---
 
 ## 3. 调用方式（推荐，最稳）
 
-**直接调用仓库根目录已有的脚本**，不要让 agent 现场拼 curl。脚本会自动生成
-`event_id`、填好 hostname/cwd、做错误处理。
+调用 skill 自带的脚本，**不要让 agent 现场拼 curl**。脚本会自动生成 `event_id`、
+填好 hostname/cwd、做错误处理。
 
-```bash
-set -a
-source skills/agent-notifier-qq/.env
-set +a
-bash scripts/notify-agent-done.sh <project> <status> "<summary>"
-```
+skill 解压后，脚本在 skill 自己的目录里。用下面任一方式定位：
+
+- 如果环境提供了 `CLAUDE_PLUGIN_ROOT`（Claude Skills 标准变量），就用它：
+  ```bash
+  bash "$CLAUDE_PLUGIN_ROOT/notify-agent-done.sh" <project> <status> "<summary>"
+  ```
+- 否则，agent 应当把 skill 目录的绝对路径记下来当 `SKILL_DIR` 用：
+  ```bash
+  # 例：SKILL_DIR=$HOME/.claude/skills/agent-notifier-qq
+  bash "$SKILL_DIR/notify-agent-done.sh" <project> <status> "<summary>"
+  ```
 
 参数说明：
 
@@ -69,31 +88,19 @@ bash scripts/notify-agent-done.sh <project> <status> "<summary>"
 | `<status>` | ✅ | 必须是 `success` / `failed` / `cancelled` / `timeout` / `unknown` 之一 |
 | `<summary>` | ❌ | 一句话结果，最长 1200 字。不传则默认 "任务结束" |
 
-**强烈建议**：在自己的命令前后包裹，根据真实退出码决定 status：
+**强烈建议**根据真实退出码决定 `<status>`：
 
 ```bash
-set -a
-source skills/agent-notifier-qq/.env
-set +a
-
 # ↓↓↓ 你的实际任务命令 ↓↓↓
 your-real-command --foo --bar
 EXIT_CODE=$?
 # ↑↑↑ 你的实际任务命令 ↑↑↑
 
 if [ "$EXIT_CODE" -eq 0 ]; then
-  bash scripts/notify-agent-done.sh "my-project" success "任务完成 ✅"
+  bash "$CLAUDE_PLUGIN_ROOT/notify-agent-done.sh" "my-project" success "任务完成 ✅"
 else
-  bash scripts/notify-agent-done.sh "my-project" failed "任务失败，退出码 $EXIT_CODE"
+  bash "$CLAUDE_PLUGIN_ROOT/notify-agent-done.sh" "my-project" failed "任务失败，退出码 $EXIT_CODE"
 fi
-```
-
-如果想"跑命令 + 自动通知"一行搞定，仓库里还有 `scripts/run-with-notify.sh`：
-
-```bash
-set -a; source skills/agent-notifier-qq/.env; set +a
-bash scripts/run-with-notify.sh my-project -- pytest -x
-# 它会按 pytest 的真实退出码自动决定 success/failed
 ```
 
 ---
@@ -120,7 +127,7 @@ curl -fsS -X POST "$AGENT_NOTIFY_URL" \
 
 ---
 
-## 5. 字段速查（对应 `app/models.py::AgentDoneReq`）
+## 5. 字段速查（对应服务端 `app/models.py::AgentDoneReq`）
 
 | 字段 | 必填 | 类型 | 说明 |
 |---|---|---|---|
@@ -145,17 +152,16 @@ curl -fsS -X POST "$AGENT_NOTIFY_URL" \
 
 | 现象 | 含义 | 怎么办 |
 |---|---|---|
-| HTTP `401 invalid token` | `.env` 里 token 错了或机器人没绑定 | 让用户重新 `/bind` 拿新 token |
+| HTTP `401 invalid token` | token 错了或机器人没绑定 | 让用户重新 `/bind` 拿新 token |
 | HTTP `429` | 触发限流 | 不要重试，本次跳过，下次少发 |
 | `curl: (7) Failed to connect` | 服务不可达 | 检查 `AGENT_NOTIFY_URL` 是否带了 `/v1/notify/agent-done` 完整路径 |
-| 脚本报 `missing AGENT_NOTIFY_URL` | `.env` 没 source 进来 | 用 `set -a; source .env; set +a` 形式 |
+| 脚本报 `missing AGENT_NOTIFY_URL` | 环境变量没透传进来 | 确认在调用脚本的 shell 里 `echo $AGENT_NOTIFY_URL` 非空 |
 | 同一个 `event_id` 发了两次 | 服务端会去重，QQ 只收到一条 | 这是正确行为，别为了"补发"硬改 ID 绕过 |
 
-通知失败**不应该让主任务失败**。`run-with-notify.sh` 已经做了这个处理；如果你
-是手写 if/else，请在 `notify-agent-done.sh` 后面加 `|| true`：
+通知失败**不应该让主任务失败**。手写 if/else 时，请在脚本调用后面加 `|| true`：
 
 ```bash
-bash scripts/notify-agent-done.sh ... || true
+bash "$CLAUDE_PLUGIN_ROOT/notify-agent-done.sh" ... || true
 ```
 
 ---
@@ -163,6 +169,6 @@ bash scripts/notify-agent-done.sh ... || true
 ## 7. 安全注意
 
 - `AGENT_TOKEN` 是**用户私人**的 QQ 推送凭证，泄漏等于别人能给该用户 QQ 发消息。
-  不要把 token 打印到日志、不要写进 git、不要 echo 出来。
-- `.env` 已被 `.gitignore` 忽略；提交前用 `git status` 确认。
+  不要把 token 打印到日志、不要写进 git、不要 `echo` 出来。
+- 优先使用 agent / capsule 自带的 secrets 机制存放 token，避免明文落盘。
 - `summary` / `log_tail` 会原样进入 QQ 消息，**不要**把数据库密码、私钥等放进去。

@@ -186,8 +186,14 @@ class QQClient:
     ) -> dict[str, Any]:
         """单聊发送文本消息。
 
-        - 主动消息：不传 msg_id。
-        - 被动回复：传入 msg_id（事件中的 d.id），msg_seq 默认 1。
+        - 主动消息：不传 msg_id，也不传 event_id。
+        - 被动回复：传入 msg_id（事件中的 d.id），msg_seq 默认 1；
+          若是因 QQ 回调事件触发（如菜单点击）则带上对应的 event_id。
+
+        ⚠️ 注意：此处的 ``event_id`` 是 QQ OpenAPI 协议字段，含义是
+        「响应哪个 QQ 回调事件」，并不是调用方自己用于去重的事件 ID。
+        主动消息场景请保持为 None，否则 QQ 会返回
+        ``40034025 请求参数event_id无效``。
         """
         path = f"/v2/users/{user_openid}/messages"
         body: dict[str, Any] = {
